@@ -5,6 +5,7 @@
 
 library resumable.base;
 
+import 'dart:async';
 import 'dart:html';
 
 typedef String IdGenerator();
@@ -254,45 +255,12 @@ class Resumable {
 
   // Events
 
-  List<FileSuccess> _fileSuccessCallbacks = [];
-  void onFileSuccess(FileSuccess c) => _fileSuccessCallbacks.add(c);
-  bool offFileSuccess(FileSuccess c) => _fileSuccessCallbacks.remove(c);
-  
-  List<FileProgress> _fileProgressCallbacks = [];
-  void onFileProgress(FileProgress c) => _fileProgressCallbacks.add(c);
-  bool offFileProgress(FileProgress c) => _fileProgressCallbacks.remove(c);
+  StreamController<FileSuccessEvent> _fileSuccessController = new StreamController<FileSuccessEvent>();
+  Stream<FileSuccessEvent> get onFileSuccess => _fileSuccessController.stream;
 
-  List<FileAdded> _fileAddedCallbacks = [];
-  void onFileAdded(FileAdded c) => _fileAddedCallbacks.add(c);
-  bool offFileAdded(FileAdded c) => _fileAddedCallbacks.remove(c);
-  
-  List<FileRetry> _fileRetryCallbacks = [];
-  void onFileRetry(FileRetry c) => _fileRetryCallbacks.add(c);
-  bool offFileRetry(FileRetry c) => _fileRetryCallbacks.remove(c);
+  StreamController<FileProgressEvent> _fileProgressController = new StreamController<FileProgressEvent>();
+  Stream<FileProgressEvent> get onFileProgress => _fileProgressController.stream;
 
-  List<FileError> _fileErrorCallbacks = [];
-  void onFileError(FileError c) => _fileErrorCallbacks.add(c);
-  bool offFileError(FileError c) => _fileErrorCallbacks.remove(c);
-
-  List<Complete> _completeCallbacks = [];
-  void onComplete(Complete c) => _completeCallbacks.add(c);
-  bool offComplete(Complete c) => _completeCallbacks.remove(c);
-
-  List<Progress> _progressCallbacks = [];
-  void onProgress(Progress c) => _progressCallbacks.add(c);
-  bool offProgress(Progress c) => _progressCallbacks.remove(c);
-
-  List<Error> _errorCallbacks = [];
-  void onError(Error c) => _errorCallbacks.add(c);
-  bool offError(Error c) => _errorCallbacks.remove(c);
-
-  List<Pause> _pauseCallbacks = [];
-  void onPause(Pause c) => _pauseCallbacks.add(c);
-  bool offPause(Pause c) => _pauseCallbacks.remove(c);
-
-  List<Cancel> _cancelCallbacks = [];
-  void onCancel(Cancel c) => _cancelCallbacks.add(c);
-  bool offCancel(Cancel c) => _cancelCallbacks.remove(c);
 }
 
 class ResumableFile {
@@ -321,3 +289,33 @@ class ResumableChunk {
 
 
 }
+
+class ResumableEvent {}
+
+abstract class FileEvent extends ResumableEvent {
+  ResumableFile _resumableFile;
+
+  FileEvent(this._resumableFile);
+
+  ResumableFile get resumableFile => _resumableFile;
+}
+
+class FileSuccessEvent extends FileEvent{
+  FileSuccessEvent(ResumableFile resumableFile) : super(resumableFile);
+}
+
+class FileProgressEvent extends FileEvent{
+  FileProgressEvent(ResumableFile resumableFile) : super(resumableFile);
+}
+
+class FileErrorEvent extends FileEvent{
+
+  String _message;
+
+  FileErrorEvent(ResumableFile resumableFile, this._message) : super(resumableFile);
+
+  String get message => _message;
+}
+
+
+
