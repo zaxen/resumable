@@ -6,9 +6,11 @@
 library resumable.base;
 
 import 'dart:async';
+import 'dart:collection';
+import 'dart:core';
 import 'dart:html';
 
-typedef String IdGenerator();
+typedef String IdGenerator(File file);
 typedef void MaxFilesErrorCallback(List<File> files, num errorCount);
 typedef void FileTypeErrorCallback(File file, num errorCount);
 /// A specific file was completed.
@@ -37,36 +39,36 @@ typedef void Cancel();
 class Resumable {
   static const num DEFAULT_CHUNK_SIZE = 1 * 1024 * 1024;
   /// The target URL for the multipart POST request
-  String target = '/';
+  final String target = '/';
   /// The size in bytes of each uploaded chunk of data
-  num chunkSize = DEFAULT_CHUNK_SIZE;
+  final num chunkSize = DEFAULT_CHUNK_SIZE;
   /// Number of simultaneous uploads
-  num simultaneousUploads = 3;
+  final num simultaneousUploads = 3;
   /// The name of the multipart POST parameter to use for the file chunk
-  String fileParameterName = 'file';
+  final String fileParameterName = 'file';
   /// Extra parameters to include in the multipart POST with data. This can be an Map<String,String> or a function. If
   /// a function, it will be passed a ResumableFile object
-  dynamic query = const <String,String>{};
+  final dynamic query = const <String,String>{};
   /// Extra headers to include in the multipart POST with data
-  Map<String,String> headers = const <String,String>{};
+  final Map<String,String> headers = const <String,String>{};
   /// Prioritize first and last chunks of all files. This can be handy if you can determine if a file is valid for
   /// your service from only the first or last chunk. For example, photo or video meta data is usually located in the
   /// first part of a file, making it easy to test support from only the first chunk.
-  bool prioritizeFirstAndLastChunk = false;
+  final bool prioritizeFirstAndLastChunk = false;
   /// Make a GET request to the server for each chunks to see if it already exists. If implemented on the server-side,
   /// this will allow for upload resumes even after a browser crash or even a computer restart.
-  bool testChunks = true;
+  final bool testChunks = true;
   /// Override the function that generates unique identifiers for each file.
-  IdGenerator generateUniqueIdentifier = null;
-  /// Indicates how many files can be uploaded in a single session. Valid values are any positive integer -1 for no
+  final IdGenerator generateUniqueIdentifier = null;
+  /// Indicates how many files can be uploaded in a single session. Valid values are any positive integer, null for no
   /// limit.
-  num maxFiles = -1;
-  /// A function which displays the please upload n file(s) at a time message. (Default: displays an alert box with
-  /// the message Please n one file(s) at a time.)
-  MaxFilesErrorCallback maxFilesErrorCallback = (files, errorCount) => window.alert('Please upload $maxFiles file${maxFiles == 1 ? '' : 's'} at a time.');
-  /// A function which displays the file types do not match message.  (Default displays an alert box with the message
-  /// Please select only files with filetypes.)
-  FileTypeErrorCallback fileTypeErrorCallback = (file, errorCount) => window.alert('Please select only files with extensions ${fileTypes.join(', ')}.');
+  final num maxFiles = null;
+  /// Indicates the minimum file size to upload. Valid values are any positive integer, null for no
+  /// limit.
+  final num minFileSize = null;
+  /// Indicates the maximum file size to upload. Valid values are any positive integer, null for no
+  /// limit.
+  final num maxFileSize = null;
 
   /// A list of file extensions to accept for upload
   List<String> fileTypes = const [];
@@ -76,11 +78,16 @@ class Resumable {
             ,this.simultaneousUploads
             ,this.fileParameterName
             ,this.query
-            ,this.headers });
+            ,this.headers
+            ,this.minFileSize
+            ,this.maxFileSize
+            ,this.maxFiles
+            });
 
   bool get support => true;
 
   List<ResumableFile> get files => const [];
+  Map<String,ResumableFile> _fileMap = new Map<String,ResumableFile>();
 
   /// Assign a browse action to one DOM nodes. Pass in true to isDirectory to allow directories to be selected (Chrome
   /// only).
@@ -111,7 +118,7 @@ class Resumable {
       input.directory = isDirectory;
       input.onChange.listen((e) {
         InputElement target = e.target;
-        appendFilesFromFileList(target.files,e);
+        appendFilesFromFileStream(new Stream.fromIterable(new List.from(target.files)));
         target.value = '';
       });
     }
@@ -122,9 +129,71 @@ class Resumable {
     assignDropElements([domNode]);
   }
 
+  var _preventDefault = (Event event) => event.preventDefault();
+
+  void _onDrop(MouseEvent event) {
+    event.preventDefault();
+    if (event.dataTransfer != null) {
+      final items = event.dataTransfer.items;
+      final files = event.dataTransfer.files;
+      Stream<File> fileStream;
+      if (items != null) {
+        var itemList = <DataTransferItem>[];
+        for (var i=0; i < items.length; ++i) {
+          itemList[i] = items[i];
+        }
+        fileStream = _loadDataTransferItems(itemList);
+      } else if (files != null) {
+        fileStream = new Stream.fromIterable(files);
+      } else {
+        fileStream = new Stream<File>.fromIterable([]);
+      }
+      appendFilesFromFileStream(fileStream);
+    }
+  }
+
+  Stream<File> _loadDataTransferItems(List<DataTransferItem> items) async* {
+    for (DataTransferItem item in items) {
+      Entry entry = item.getAsEntry();
+      if (entry != null) {
+        if (entry.isFile) {
+          FileEntry fileEntry = entry;
+          yield await fileEntry.file();
+        } else if (entry.isDirectory) {
+          yield* _loadDirEntry(entry);
+        }
+      }
+    }
+  }
+
+  Stream<File> _loadDirEntry(DirectoryEntry dirEntry) async* {
+    DirectoryReader reader = dirEntry.createReader();
+    List<Entry> dirEntries = await reader.readEntries();
+    for (Entry entry in dirEntries) {
+      if (entry.isFile) {
+        FileEntry fe = entry;
+        yield await fe.file();
+      } else if (entry.isDirectory) {
+        yield* _loadDirEntry(entry);
+      }
+    }
+  }
+
   /// Assign one or more DOM nodes as a drop target.
   void assignDropElements(List<Element> domNodes) {
+    for (var domNode in domNodes) {
+      domNode.addEventListener("dragover", _preventDefault);
+      domNode.addEventListener("dragenter", _preventDefault);
+      domNode.addEventListener("drop", _onDrop);
+    }
+  }
 
+  void unassignDropElements(List<Element> domNodes) {
+    for (var domNode in domNodes) {
+      domNode.removeEventListener("dragover", _preventDefault);
+      domNode.removeEventListener("dragenter", _preventDefault);
+      domNode.removeEventListener("drop", _onDrop);
+    }
   }
 
   /// Start or resume uploading.
@@ -144,177 +213,201 @@ class Resumable {
 
   /// Cancel upload of a specific ResumableFile object on the list from the list.
   void removeFile(ResumableFile file) {
-
+    _fileMap.remove(file.uniqueIdentifier);
+    files.remove(file);
   }
 
   /// Look up a ResumableFile object by its unique identifier.
   ResumableFile getFromUniqueIdentifier(String uniqueIdentifier) {
-    return null;
+    return _fileMap[uniqueIdentifier];
   }
 
   /// Returns the total size of the upload in bytes.
-  num get size => 0;
+  num get size => files.fold(0, (v, e) => v += e.file.size);
 
   // Internal
 
-  bool appendFilesFromFileList(List<File> filesList, Event event) {
-    // check for uploading too many files
-    var errorCount = 0;
-    if (maxFiles != -1 && maxFiles < (filesList.length + this.files.length)) {
-      // if single-file upload, file is already added, and trying to add 1 new file, simply replace the already-added file
-      if (maxFiles == 1 && this.files.length == 1 && filesList.length == 1) {
-        this.files.removeAt(0);
-      } else {
-        maxFilesErrorCallback(filesList, errorCount++);
-        return false;
-      }
+  bool _fireEvent(StreamController<ResumableEvent> controller, ResumableEvent event) {
+    if (controller.hasListener) {
+      controller.add(event);
+      return true;
+    } else {
+      window.console.warn("$controller has no listener for $event");
+      return false;
     }
+  }
 
-    var files = [];
-    for (var file in filesList) {
+  final _uniqueIdRegExp = new RegExp(r"[^0-9a-zA-Z_-]", multiLine: true, caseSensitive: true);
+  String _generateUniqueIdentifier(File file) {
+    if (generateUniqueIdentifier != null) {
+      return generateUniqueIdentifier(file);
+    } else {
+      final relativePath = file.relativePath;
+      final size = file.size;
+
+      return "$size - ${relativePath.replaceAll(_uniqueIdRegExp, '')}";
+    }
+  }
+
+  Future appendFilesFromFileStream(Stream<File> fileStream/*, Event event*/) async {
+
+    //var files = <ResumableFile>[];
+    await for (File file in fileStream) {
       var filename = file.name;
       if (fileTypes.isNotEmpty) {
         if (!fileTypes.map((_) => _.startsWith('.') ? _ : ".$_").any((extension) => filename.endsWith(extension))) {
-          fileTypeErrorCallback(file, errorCount++);
-          return false;
+          _fireEvent(_fileAddedErrorController, new InvalidFileTypeEvent(file));
+          continue;
         }
       }
-    }
 
-    // min and max file size checks.
-//    // check for uploading too many files
-//    var errorCount = 0;
-//    var o = $.getOpt(['maxFiles', 'minFileSize', 'maxFileSize', 'maxFilesErrorCallback', 'minFileSizeErrorCallback', 'maxFileSizeErrorCallback', 'fileType', 'fileTypeErrorCallback']);
-//    if (typeof(o.maxFiles)!=='undefined' && o.maxFiles<(fileList.length+$.files.length)) {
-//  // if single-file upload, file is already added, and trying to add 1 new file, simply replace the already-added file
-//  if (o.maxFiles===1 && $.files.length===1 && fileList.length===1) {
-//  $.removeFile($.files[0]);
-//  } else {
-//  o.maxFilesErrorCallback(fileList, errorCount++);
-//  return false;
-//  }
-//  }
-//  var files = [];
-//  $h.each(fileList, function(file){
-//    var fileName = file.name;
-//    if(o.fileType.length > 0){
-//      var fileTypeFound = false;
-//      for(var index in o.fileType){
-//        var extension = '.' + o.fileType[index];
-//        if(fileName.indexOf(extension, fileName.length - extension.length) !== -1){
-//          fileTypeFound = true;
-//          break;
-//        }
-//      }
-//      if (!fileTypeFound) {
-//        o.fileTypeErrorCallback(file, errorCount++);
-//        return false;
-//      }
-//    }
-//
-//    if (typeof(o.minFileSize)!=='undefined' && file.size<o.minFileSize) {
-//      o.minFileSizeErrorCallback(file, errorCount++);
-//      return false;
-//    }
-//    if (typeof(o.maxFileSize)!=='undefined' && file.size>o.maxFileSize) {
-//      o.maxFileSizeErrorCallback(file, errorCount++);
-//      return false;
-//    }
-//
-//    function addFile(uniqueIdentifier){
-//      if (!$.getFromUniqueIdentifier(uniqueIdentifier)) {(function(){
-//      file.uniqueIdentifier = uniqueIdentifier;
-//      var f = new ResumableFile($, file, uniqueIdentifier);
-//      $.files.push(f);
-//      files.push(f);
-//      f.container = (typeof event != 'undefined' ? event.srcElement : null);
-//      window.setTimeout(function(){
-//      $.fire('fileAdded', f, event)
-//      },0);
-//      })()};
-//    }
-//    // directories have size == 0
-//    var uniqueIdentifier = $h.generateUniqueIdentifier(file)
-//    if(uniqueIdentifier && typeof uniqueIdentifier.done === 'function' && typeof uniqueIdentifier.fail === 'function'){
-//      uniqueIdentifier
-//      .done(function(uniqueIdentifier){
-//      addFile(uniqueIdentifier);
-//      })
-//      .fail(function(){
-//      addFile();
-//      });
-//    }else{
-//      addFile(uniqueIdentifier);
-//    }
-//
-//  });
-//  window.setTimeout(function(){
-//    $.fire('filesAdded', files)
-//  },0);
+      if (minFileSize != null && minFileSize > file.size) {
+        _fireEvent(_fileAddedErrorController, new FileTooSmallEvent(file));
+        continue;
+      }
+      if (maxFileSize != null && maxFileSize < file.size) {
+        _fireEvent(_fileAddedErrorController, new FileTooLargeEvent(file));
+        continue;
+      }
+
+      var uniqueIdentifier = _generateUniqueIdentifier(file);
+      if (getFromUniqueIdentifier(uniqueIdentifier) == null) {
+
+        // going to add this file, so check if it will exceed max files
+        if (this.files.length >= maxFiles) {
+          _fireEvent(_fileAddedController, new TooManyFilesEvent(file));
+          continue;
+        }
+
+        var f = new ResumableFile(this, file, uniqueIdentifier);
+
+        //if (event != null) f.container = event.target;
+        //files.add(f);
+        this.files.add(f);
+        this._fileMap[uniqueIdentifier] = f;
+        _fireEvent(_fileAddedController, new FileAddedEvent(f));
+      }
+    }
   }
 
   // Events
 
-  StreamController<FileSuccessEvent> _fileSuccessController = new StreamController<FileSuccessEvent>();
+  StreamController<FileAddedEvent> _fileAddedController = new StreamController<FileAddedEvent>.broadcast();
+  Stream<FileAddedEvent> get onFileAdded => _fileAddedController.stream;
+
+  StreamController<FileAddErrorEvent> _fileAddedErrorController = new StreamController<FileAddErrorEvent>.broadcast();
+  Stream<FileAddErrorEvent> get onFileAddedError => _fileAddedErrorController.stream;
+
+  StreamController<FileSuccessEvent> _fileSuccessController = new StreamController<FileSuccessEvent>.broadcast();
   Stream<FileSuccessEvent> get onFileSuccess => _fileSuccessController.stream;
 
-  StreamController<FileProgressEvent> _fileProgressController = new StreamController<FileProgressEvent>();
+  StreamController<FileProgressEvent> _fileProgressController = new StreamController<FileProgressEvent>.broadcast();
   Stream<FileProgressEvent> get onFileProgress => _fileProgressController.stream;
 
 }
 
 class ResumableFile {
-  Resumable _resumable;
-  File _file;
-  String _uniqueIdentifier;
+  final Resumable _resumable;
+  final File _file;
+  final String _uniqueIdentifier;
   List<ResumableChunk> _resumableChunks = [];
+  var container;
 
-  ResumableFile(this._resumable, this._file, this._uniqueIdentifier);
+  ResumableFile(this._resumable, this._file, this._uniqueIdentifier) {
+    _resumableChunks = _generateChunks();
+  }
+
+  List<ResumableChunk> _generateChunks() {
+    var chunks = (_file.size / _resumable.chunkSize).floor() + 1;
+    var result = new List<ResumableChunk>(chunks);
+    for (int i = 0; i < chunks; ++i) {
+      result[i] = new ResumableChunk(_resumable, this, _resumable.chunkSize * i);
+    }
+    return result;
+  }
 
   File get file => _file;
   String get filename => _file.name;
   String get relativePath => _file.relativePath;
   String get uniqueIdentifier => _uniqueIdentifier;
   num get size => _file.size;
-  List<ResumableChunk> get resumableChunks => new List<ResumableChunk>.unmodifiable(_resumableChunks);
+
+  List<ResumableChunk> get resumableChunks => new UnmodifiableListView(_resumableChunks);
 }
 
 class ResumableChunk {
-  Resumable _resumable;
-  ResumableFile _resumableFile;
-  var _offset;
-  var _callback;
+  final Resumable _resumable;
+  final ResumableFile _resumableFile;
+  final num _offset;
 
-  ResumableChunk(this._resumable, this._resumableFile, this._offset, this._callback);
+  bool tested = false;
+
+  ResumableChunk(this._resumable, this._resumableFile, this._offset);
+
+  void upload() {
+    if (_resumable.testChunks && !tested) {
+
+    }
+  }
+
+  Future<bool> test() async {
+    HttpRequest request = new HttpRequest();
 
 
+    request.onError.single;
+    await for (ProgressEvent e in request.onReadyStateChange) {
+      if (request.readyState == HttpRequest.DONE) {
+
+      }
+    }
+  }
 }
 
 class ResumableEvent {}
 
 abstract class FileEvent extends ResumableEvent {
-  ResumableFile _resumableFile;
+  final ResumableFile resumableFile;
 
-  FileEvent(this._resumableFile);
-
-  ResumableFile get resumableFile => _resumableFile;
+  FileEvent(this.resumableFile);
 }
 
-class FileSuccessEvent extends FileEvent{
+class FileSuccessEvent extends FileEvent {
   FileSuccessEvent(ResumableFile resumableFile) : super(resumableFile);
 }
 
-class FileProgressEvent extends FileEvent{
+class FileProgressEvent extends FileEvent {
   FileProgressEvent(ResumableFile resumableFile) : super(resumableFile);
 }
 
-class FileErrorEvent extends FileEvent{
+abstract class FileAddErrorEvent extends ResumableEvent {
+  final File file;
+  FileAddErrorEvent(this.file);
+}
 
-  String _message;
+class FileTooLargeEvent extends FileAddErrorEvent {
+  FileTooLargeEvent(File file) : super(file);
+}
 
-  FileErrorEvent(ResumableFile resumableFile, this._message) : super(resumableFile);
+class FileTooSmallEvent extends FileAddErrorEvent {
+  FileTooSmallEvent(File file) : super(file);
+}
 
-  String get message => _message;
+class TooManyFilesEvent extends FileAddErrorEvent {
+  TooManyFilesEvent(File file) : super(file);
+}
+
+class InvalidFileTypeEvent extends FileAddErrorEvent {
+  InvalidFileTypeEvent(File file) : super(file);
+}
+
+class FileAddedEvent extends FileEvent {
+  FileAddedEvent(ResumableFile resumableFile) : super(resumableFile);
+}
+
+class FileErrorEvent extends FileEvent {
+  final String message;
+
+  FileErrorEvent(ResumableFile resumableFile, this.message) : super(resumableFile);
 }
 
 
